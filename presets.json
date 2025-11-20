@@ -1,0 +1,92 @@
+{
+    "Enable Dark Mode": {
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "values": [
+            [
+                "AppsUseLightTheme",
+                0,
+                4
+            ],
+            [
+                "SystemUsesLightTheme",
+                0,
+                4
+            ]
+        ]
+    },
+    "Enable Light Mode": {
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "values": [
+            [
+                "AppsUseLightTheme",
+                1,
+                4
+            ],
+            [
+                "SystemUsesLightTheme",
+                1,
+                4
+            ]
+        ]
+    },
+    "Show File Extensions": {
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "values": [
+            [
+                "HideFileExt",
+                0,
+                4
+            ]
+        ]
+    },
+    "Hide File Extensions": {
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "values": [
+            [
+                "HideFileExt",
+                1,
+                4
+            ]
+        ]
+    },
+    "Show Hidden Files": {
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "values": [
+            [
+                "Hidden",
+                1,
+                4
+            ]
+        ]
+    },
+    "Hide Hidden Files": {
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "values": [
+            [
+                "Hidden",
+                2,
+                4
+            ]
+        ]
+    },
+    "Enable Title Bar Color": {
+        "path": "Software\\Microsoft\\Windows\\DWM",
+        "values": [
+            [
+                "ColorPrevalence",
+                1,
+                4
+            ]
+        ]
+    },
+    "Disable Title Bar Color": {
+        "path": "Software\\Microsoft\\Windows\\DWM",
+        "values": [
+            [
+                "ColorPrevalence",
+                0,
+                4
+            ]
+        ]
+    }
+}
