@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from ui_components import RegistryApp
+from ui.main_window import RegistryApp
 
 def main():
     ctk.set_appearance_mode("System")

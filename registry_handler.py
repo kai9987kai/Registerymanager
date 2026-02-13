@@ -1,6 +1,7 @@
 import winreg
 import shutil
 import os
+import subprocess
 from datetime import datetime
 
 class RegistryHandler:
@@ -24,6 +25,9 @@ class RegistryHandler:
             return None
         except PermissionError:
             return "Permission Denied"
+        except Exception as e:
+            print(f"Error reading key {subkey}: {e}")
+            return None
 
     def enum_keys(self, hive, subkey):
         try:
@@ -69,8 +73,6 @@ class RegistryHandler:
             print(f"Error creating key: {e}")
             return False
             
-    # Note: True backup/restore of registry keys programmatically is complex and often requires
-    # calling reg.exe or using specific APIs. For safety, we might just export to .reg file.
     def backup_key(self, path, backup_folder="backups"):
         if not os.path.exists(backup_folder):
             os.makedirs(backup_folder)
@@ -79,17 +81,61 @@ class RegistryHandler:
         filename = f"backup_{timestamp}.reg"
         filepath = os.path.join(backup_folder, filename)
         
-        # Using reg.exe for export as it's reliable
-        # path format for reg.exe: HKEY_CURRENT_USER\Software\MyApp
-        cmd = f'reg export "{path}" "{filepath}" /y'
-        os.system(cmd)
-        return filepath
+        # Using subprocess for better security
+        cmd = ['reg', 'export', path, filepath, '/y']
+        try:
+            subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            return filepath
+        except subprocess.CalledProcessError as e:
+            print(f"Backup failed: {e}")
+            return None
 
     def restore_backup(self, filepath):
         if not os.path.exists(filepath):
             return False
-        
-        # reg import
-        cmd = f'reg import "{filepath}"'
-        ret = os.system(cmd)
-        return ret == 0
+            
+        cmd = ['reg', 'import', filepath]
+        try:
+            subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Restore failed: {e}")
+            return False
+
+    def search_registry(self, hive, start_path, query, stop_event=None):
+        """
+        Recursive search for keys or values containing the query.
+        Returns a list of results: [{'path': ..., 'type': 'Key'|'Value', 'name': ...}, ...]
+        """
+        results = []
+        try:
+            # Check keys
+            subkeys = self.enum_keys(hive, start_path)
+            for sk in subkeys:
+                if stop_event and stop_event.is_set():
+                    return results
+                
+                full_sub_path = f"{start_path}\\{sk}" if start_path else sk
+                
+                if query.lower() in sk.lower():
+                    results.append({'path': full_sub_path, 'type': 'Key', 'name': sk})
+                
+                # Recurse
+                results.extend(self.search_registry(hive, full_sub_path, query, stop_event))
+            
+            # Check values
+            values = self.read_key(hive, start_path)
+            if values and not isinstance(values, str):
+                for name, data, type_ in values:
+                    if stop_event and stop_event.is_set():
+                        return results
+                    
+                    name_str = name if name else "(Default)"
+                    if query.lower() in name_str.lower() or query.lower() in str(data).lower():
+                        results.append({'path': start_path, 'type': 'Value', 'name': name_str, 'data': str(data)})
+                        
+        except Exception as e:
+            # Access denied or other errors are common in registry traversal
+            pass
+            
+        return results
