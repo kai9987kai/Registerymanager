@@ -1,6 +1,7 @@
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import ttk
+import os
 import winreg
 from registry_handler import RegistryHandler
 from preset_manager import PresetManager
@@ -55,6 +56,7 @@ class RegistryApp(ctk.CTk):
         self.preset_manager = PresetManager()
         self.current_hive = winreg.HKEY_CURRENT_USER
         self.current_path = ""
+        self.value_filter_var = tk.StringVar()
 
         self.create_sidebar()
         self.create_main_area()
@@ -173,12 +175,40 @@ class RegistryApp(ctk.CTk):
         toolbar.pack(fill="x", pady=5)
         
         ctk.CTkButton(toolbar, text="Refresh", width=80, command=lambda: self.load_values(path)).pack(side="left", padx=5)
+        ctk.CTkButton(toolbar, text="New Value", width=90, command=self.open_new_value_dialog).pack(side="left", padx=5)
         ctk.CTkButton(toolbar, text="Save as Preset", width=120, command=self.prompt_save_preset).pack(side="left", padx=5)
         ctk.CTkButton(toolbar, text="Backup Key", width=100, command=self.backup_current_key).pack(side="right", padx=5)
+
+        path_row = ctk.CTkFrame(self.value_list, fg_color="transparent")
+        path_row.pack(fill="x", pady=(0, 5))
+        ctk.CTkLabel(path_row, text="Path:").pack(side="left", padx=(5, 2))
+        path_entry = ctk.CTkEntry(path_row)
+        path_entry.insert(0, self.current_path)
+        path_entry.pack(side="left", fill="x", expand=True, padx=5)
+        ctk.CTkButton(path_row, text="Go", width=60, command=lambda: self.go_to_path(path_entry.get())).pack(side="left", padx=5)
+
+        filter_row = ctk.CTkFrame(self.value_list, fg_color="transparent")
+        filter_row.pack(fill="x", pady=(0, 5))
+        ctk.CTkLabel(filter_row, text="Filter values:").pack(side="left", padx=(5, 2))
+        filter_entry = ctk.CTkEntry(filter_row, textvariable=self.value_filter_var, placeholder_text="name/value contains...")
+        filter_entry.pack(side="left", fill="x", expand=True, padx=5)
+        ctk.CTkButton(filter_row, text="Apply", width=70, command=lambda: self.load_values(path)).pack(side="left", padx=5)
+        ctk.CTkButton(filter_row, text="Clear", width=70, command=self.clear_value_filter).pack(side="left", padx=5)
 
         values = self.registry_handler.read_key(self.current_hive, path)
         
         if values:
+            filter_text = self.value_filter_var.get().strip().lower()
+            if filter_text:
+                filtered_values = []
+                for name, data, type_ in values:
+                    name_text = (name or "(Default)").lower()
+                    data_text = str(data).lower()
+                    type_text = str(type_).lower()
+                    if filter_text in name_text or filter_text in data_text or filter_text in type_text:
+                        filtered_values.append((name, data, type_))
+                values = filtered_values
+
             # Header
             header = ctk.CTkFrame(self.value_list, fg_color="transparent")
             header.pack(fill="x", pady=2)
@@ -207,6 +237,71 @@ class RegistryApp(ctk.CTk):
                 
                 del_btn = ctk.CTkButton(row, text="Del", width=50, fg_color="red", hover_color="darkred", command=lambda n=name: self.delete_value_ui(n))
                 del_btn.pack(side="right", padx=5)
+        else:
+            ctk.CTkLabel(self.value_list, text="No values found for this key/filter.").pack(pady=10)
+
+    def clear_value_filter(self):
+        self.value_filter_var.set("")
+        self.load_values(self.current_path)
+
+    def go_to_path(self, path):
+        path = path.strip().strip("\\")
+        self.current_path = path
+        self.load_values(path)
+
+    def open_new_value_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Create New Value")
+        dialog.geometry("420x240")
+        dialog.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(dialog, text="Name:").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        name_entry = ctk.CTkEntry(dialog)
+        name_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+
+        ctk.CTkLabel(dialog, text="Type:").grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        type_values = {
+            "REG_SZ": winreg.REG_SZ,
+            "REG_DWORD": winreg.REG_DWORD,
+            "REG_QWORD": winreg.REG_QWORD,
+            "REG_BINARY": winreg.REG_BINARY,
+        }
+        type_menu = ctk.CTkOptionMenu(dialog, values=list(type_values.keys()))
+        type_menu.set("REG_SZ")
+        type_menu.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
+
+        ctk.CTkLabel(dialog, text="Value:").grid(row=2, column=0, padx=10, pady=10, sticky="w")
+        value_entry = ctk.CTkEntry(dialog)
+        value_entry.grid(row=2, column=1, padx=10, pady=10, sticky="ew")
+
+        def create_value():
+            name = name_entry.get().strip()
+            type_name = type_menu.get()
+            raw_value = value_entry.get()
+            reg_type = type_values[type_name]
+
+            if reg_type in (winreg.REG_DWORD, winreg.REG_QWORD):
+                try:
+                    parsed_value = int(raw_value, 0)
+                except ValueError:
+                    print("Invalid integer value.")
+                    return
+            elif reg_type == winreg.REG_BINARY:
+                try:
+                    parsed_value = bytes.fromhex(raw_value.replace(" ", ""))
+                except ValueError:
+                    print("Invalid hex for binary value.")
+                    return
+            else:
+                parsed_value = raw_value
+
+            if self.registry_handler.write_value(self.current_hive, self.current_path, name, parsed_value, reg_type):
+                dialog.destroy()
+                self.load_values(self.current_path)
+            else:
+                print("Failed to create value.")
+
+        ctk.CTkButton(dialog, text="Create", command=create_value).grid(row=3, column=1, padx=10, pady=20, sticky="e")
 
     def delete_value_ui(self, name):
         if self.registry_handler.delete_value(self.current_hive, self.current_path, name):
