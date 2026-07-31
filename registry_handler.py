@@ -1,25 +1,35 @@
 import winreg
-import shutil
 import os
 import subprocess
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
+
+
+class RegistryOperationError(RuntimeError):
+    """Raised when registry state cannot be read reliably."""
+
+    def __init__(self, operation, subkey, detail):
+        self.operation = operation
+        self.subkey = subkey
+        self.detail = str(detail)
+        super().__init__(f"{operation} failed for {subkey or '<root>'}: {self.detail}")
 
 class RegistryHandler:
-    def __init__(self):
-        pass
+    def __init__(self, backup_folder="backups"):
+        self.last_error = None
+        self.backup_folder = os.fspath(backup_folder)
 
     def read_key(self, hive, subkey):
         try:
-            key = winreg.OpenKey(hive, subkey)
-            values = []
-            i = 0
-            while True:
-                try:
-                    values.append(winreg.EnumValue(key, i))
-                    i += 1
-                except OSError:
-                    break
-            winreg.CloseKey(key)
+            with winreg.OpenKey(hive, subkey, 0, winreg.KEY_READ) as key:
+                values = []
+                i = 0
+                while True:
+                    try:
+                        values.append(winreg.EnumValue(key, i))
+                        i += 1
+                    except OSError:
+                        break
             return values
         except FileNotFoundError:
             return None
@@ -29,76 +39,113 @@ class RegistryHandler:
             print(f"Error reading key {subkey}: {e}")
             return None
 
+    def read_value(self, hive, subkey, name):
+        """Return ``(value, type)`` for a value, or ``None`` when absent.
+
+        Unlike ``read_key``, access and I/O errors are raised so callers never
+        mistake an unreadable value for a value that does not exist.
+        """
+        try:
+            with winreg.OpenKey(hive, subkey, 0, winreg.KEY_QUERY_VALUE) as key:
+                return winreg.QueryValueEx(key, name)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise RegistryOperationError("read value", subkey, exc) from exc
+
     def enum_keys(self, hive, subkey):
         try:
-            key = winreg.OpenKey(hive, subkey)
-            subkeys = []
-            i = 0
-            while True:
-                try:
-                    subkeys.append(winreg.EnumKey(key, i))
-                    i += 1
-                except OSError:
-                    break
-            winreg.CloseKey(key)
+            with winreg.OpenKey(hive, subkey, 0, winreg.KEY_READ) as key:
+                subkeys = []
+                i = 0
+                while True:
+                    try:
+                        subkeys.append(winreg.EnumKey(key, i))
+                        i += 1
+                    except OSError:
+                        break
             return subkeys
         except Exception:
             return []
 
     def write_value(self, hive, subkey, name, value, val_type):
+        self.last_error = None
         try:
-            key = winreg.OpenKey(hive, subkey, 0, winreg.KEY_WRITE)
-            winreg.SetValueEx(key, name, 0, val_type, value)
-            winreg.CloseKey(key)
+            with winreg.OpenKey(hive, subkey, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, name, 0, val_type, value)
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"Error writing value: {e}")
             return False
 
     def delete_value(self, hive, subkey, name):
+        self.last_error = None
         try:
-            key = winreg.OpenKey(hive, subkey, 0, winreg.KEY_WRITE)
-            winreg.DeleteValue(key, name)
-            winreg.CloseKey(key)
+            with winreg.OpenKey(hive, subkey, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, name)
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"Error deleting value: {e}")
             return False
 
     def create_key(self, hive, subkey):
+        self.last_error = None
         try:
-            winreg.CreateKey(hive, subkey)
+            with winreg.CreateKey(hive, subkey):
+                pass
             return True
         except Exception as e:
+            self.last_error = str(e)
             print(f"Error creating key: {e}")
             return False
             
-    def backup_key(self, path, backup_folder="backups"):
-        if not os.path.exists(backup_folder):
-            os.makedirs(backup_folder)
+    def backup_key(self, path, backup_folder=None):
+        self.last_error = None
+        backup_folder = os.fspath(backup_folder or self.backup_folder)
+        os.makedirs(backup_folder, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"backup_{timestamp}.reg"
-        filepath = os.path.join(backup_folder, filename)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+        key_label = path.rstrip("\\").split("\\")[-1] or "registry"
+        safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in key_label)[:48]
+        filename = f"{safe_label}_{timestamp}_{uuid.uuid4().hex[:8]}.reg"
+        filepath = os.path.abspath(os.path.join(backup_folder, filename))
         
-        # Using subprocess for better security
         cmd = ['reg', 'export', path, filepath, '/y']
         try:
-            subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=60,
+            )
             return filepath
-        except subprocess.CalledProcessError as e:
+        except (OSError, subprocess.SubprocessError) as e:
+            self.last_error = str(e)
             print(f"Backup failed: {e}")
             return None
 
     def restore_backup(self, filepath):
-        if not os.path.exists(filepath):
+        self.last_error = None
+        filepath = os.path.abspath(filepath)
+        if not os.path.isfile(filepath) or not filepath.lower().endswith(".reg"):
+            self.last_error = "Backup must be an existing .reg file."
             return False
             
         cmd = ['reg', 'import', filepath]
         try:
-            subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=60,
+            )
             return True
-        except subprocess.CalledProcessError as e:
+        except (OSError, subprocess.SubprocessError) as e:
+            self.last_error = str(e)
             print(f"Restore failed: {e}")
             return False
 

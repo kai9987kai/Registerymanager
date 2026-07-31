@@ -2,18 +2,21 @@ import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
 import winreg
+from change_manager import ChangePlan
 from .editors import ValueEditor, NewValueDialog
 from .styles import COLOR_BG, COLOR_SELECTED
 
 class RegistryBrowser(ctk.CTkFrame):
     def __init__(self, parent, registry_handler, preset_manager, 
-                 history_manager=None, favorites_manager=None, status_callback=None):
+                 history_manager=None, favorites_manager=None, status_callback=None,
+                 review_plan_callback=None):
         super().__init__(parent, corner_radius=0)
         self.registry_handler = registry_handler
         self.preset_manager = preset_manager
         self.history_manager = history_manager
         self.favorites_manager = favorites_manager
         self.status_callback = status_callback
+        self.review_plan_callback = review_plan_callback
         
         self.current_hive = winreg.HKEY_CURRENT_USER
         self.current_path = ""
@@ -64,6 +67,13 @@ class RegistryBrowser(ctk.CTkFrame):
         
         self.value_list = ctk.CTkScrollableFrame(value_frame)
         self.value_list.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Start in a useful state instead of presenting an empty canvas.
+        self.tree.item(root_node, open=True)
+        self.tree.selection_set(root_node)
+        self.tree.focus(root_node)
+        self.refresh_tree_item(root_node)
+        self.load_values("")
 
     def on_tree_open(self, event):
         items = self.tree.selection()
@@ -227,40 +237,61 @@ class RegistryBrowser(ctk.CTkFrame):
         ValueEditor(self, name, value, val_type, lambda n, v, t: self.save_value(n, v, t, old_value=value, old_type=val_type))
 
     def save_value(self, name, value, val_type, old_value=None, old_type=None):
-        success = self.registry_handler.write_value(self.current_hive, self.current_path, name, value, val_type)
-        if success:
-            # Record in history
-            if self.history_manager:
-                self.history_manager.record("write", self.current_hive, self.current_path, name,
-                                            old_value=old_value, old_type=old_type,
-                                            new_value=value, new_type=val_type)
-            self.set_status(f"Saved: {name}", "green")
-            self.load_values(self.current_path)
-        else:
-            self.set_status(f"Failed to save: {name}", "red")
+        display_name = name or "(Default)"
+        try:
+            plan = ChangePlan(self.registry_handler, f"Edit {display_name}")
+            plan.set_value(
+                self.current_hive, self.current_path, name, value, val_type
+            )
+        except Exception as exc:
+            self.set_status(f"Could not prepare edit: {exc}", "red")
+            return False
+        return self.submit_change_plan(plan, f"Saved: {display_name}")
 
     def open_new_value_dialog(self):
         def on_create(name, value, val_type):
-            if self.registry_handler.write_value(self.current_hive, self.current_path, name, value, val_type):
-                if self.history_manager:
-                    self.history_manager.record("write", self.current_hive, self.current_path, name,
-                                                new_value=value, new_type=val_type)
-                self.set_status(f"Created: {name}", "green")
-                self.load_values(self.current_path)
-            else:
-                self.set_status(f"Failed to create: {name}", "red")
+            display_name = name or "(Default)"
+            try:
+                plan = ChangePlan(self.registry_handler, f"Create {display_name}")
+                plan.set_value(
+                    self.current_hive, self.current_path, name, value, val_type
+                )
+            except Exception as exc:
+                self.set_status(f"Could not prepare value: {exc}", "red")
+                return False
+            return self.submit_change_plan(plan, f"Created: {display_name}")
         
         NewValueDialog(self, on_create)
 
     def delete_value_ui(self, name, old_value=None, old_type=None):
-        if self.registry_handler.delete_value(self.current_hive, self.current_path, name):
-            if self.history_manager:
-                self.history_manager.record("delete", self.current_hive, self.current_path, name,
-                                            old_value=old_value, old_type=old_type)
-            self.set_status(f"Deleted: {name}", "orange")
+        display_name = name or "(Default)"
+        try:
+            plan = ChangePlan(self.registry_handler, f"Delete {display_name}")
+            plan.delete_value(self.current_hive, self.current_path, name)
+        except Exception as exc:
+            self.set_status(f"Could not prepare deletion: {exc}", "red")
+            return False
+        return self.submit_change_plan(plan, f"Deleted: {display_name}")
+
+    def submit_change_plan(self, plan, success_message):
+        """Review through the app, with a safe direct fallback for reuse/tests."""
+        def on_success():
+            self.set_status(success_message, "green")
             self.load_values(self.current_path)
-        else:
-            self.set_status(f"Failed to delete: {name}", "red")
+
+        if self.review_plan_callback:
+            self.review_plan_callback(plan, on_success=on_success)
+            return True
+
+        result = plan.apply()
+        if result.success:
+            if self.history_manager and plan.effective_changes:
+                self.history_manager.record_plan(plan)
+            on_success()
+            return True
+
+        self.set_status(result.message, "red")
+        return False
 
     def add_to_favorites(self):
         if self.favorites_manager and self.current_path:

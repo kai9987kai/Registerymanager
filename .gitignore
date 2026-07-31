@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Mutable per-user data and recovery exports
+favorites.json
+backups/

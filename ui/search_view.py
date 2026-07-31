@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import tkinter as tk
 import winreg
 import threading
 
@@ -11,6 +12,9 @@ class SearchView(ctk.CTkFrame):
         self.on_navigate_to_key = on_navigate_to_key
         self.stop_event = threading.Event()
         self.search_thread = None
+        self._active_stop_event = None
+        self._search_generation = 0
+        self._destroyed = False
         
         self.create_widgets()
     
@@ -59,7 +63,13 @@ class SearchView(ctk.CTkFrame):
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         
-        self.stop_event.clear()
+        if self._active_stop_event:
+            self._active_stop_event.set()
+        self._search_generation += 1
+        generation = self._search_generation
+        stop_event = threading.Event()
+        self.stop_event = stop_event
+        self._active_stop_event = stop_event
         self.search_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.status_label.configure(text="Searching...", text_color="orange")
@@ -68,24 +78,57 @@ class SearchView(ctk.CTkFrame):
         
         self.search_thread = threading.Thread(
             target=self._run_search, 
-            args=(query, start_path), 
+            args=(query, start_path, generation, stop_event),
             daemon=True
         )
         self.search_thread.start()
     
     def stop_search(self):
-        self.stop_event.set()
+        if self._active_stop_event:
+            self._active_stop_event.set()
+        self._active_stop_event = None
+        self._search_generation += 1
         self.status_label.configure(text="Search stopped.", text_color="yellow")
         self.search_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
     
-    def _run_search(self, query, start_path):
+    def _run_search(self, query, start_path, generation, stop_event):
         results = self.registry_handler.search_registry(
-            winreg.HKEY_CURRENT_USER, start_path, query, self.stop_event
+            winreg.HKEY_CURRENT_USER, start_path, query, stop_event
         )
-        
-        # Schedule UI update on main thread
-        self.after(0, lambda: self._show_results(results))
+
+        if stop_event.is_set():
+            return
+        try:
+            self.after(
+                0,
+                lambda: self._publish_results(
+                    generation, stop_event, results
+                ),
+            )
+        except (RuntimeError, tk.TclError):
+            # Navigation can destroy the view while a worker is finishing.
+            return
+
+    def _publish_results(self, generation, stop_event, results):
+        if (
+            self._destroyed
+            or generation != self._search_generation
+            or stop_event is not self._active_stop_event
+            or stop_event.is_set()
+        ):
+            return
+        self._active_stop_event = None
+        self.search_thread = None
+        self._show_results(results)
+
+    def destroy(self):
+        self._destroyed = True
+        self._search_generation += 1
+        if self._active_stop_event:
+            self._active_stop_event.set()
+        self._active_stop_event = None
+        super().destroy()
     
     def _show_results(self, results):
         self.search_btn.configure(state="normal")

@@ -1,86 +1,96 @@
-# Registerymanager (Advanced Windows Registry Manager)
+# Registry Manager
 
-A Windows-only Registry Manager written in Python, with a **CustomTkinter** GUI for browsing, editing, backing up, and applying “preset” tweaks to common Windows settings.
+A safety-first Windows registry workbench built with Python and CustomTkinter. It browses and searches `HKEY_CURRENT_USER`, edits all common registry value types, manages favorites and presets, and creates recovery exports with Windows' built-in `reg.exe`.
 
-> ⚠️ **Warning:** Editing the Windows Registry can break apps or the OS. Always **backup** before changing values, and prefer operating under **HKEY_CURRENT_USER (HKCU)** unless you know exactly what you’re doing.
+> **Warning:** Direct registry editing bypasses normal Windows safeguards. Review every diff and keep a recovery backup. Prefer Windows Settings, Control Panel, or an application's own configuration UI when one exists.
 
----
+## Why it is different
 
-## What it does
+Registry Manager treats edits as **Safe Change Plans**:
 
-- **Browse registry keys** (Tree view) under **HKEY_CURRENT_USER**
-- **Read / create / edit / delete registry values**
-- **Value filtering** (search within the current key by name/value/type)
-- **Favorites** (persisted to `favorites.json`)
-- **Presets** (persisted to `presets.json`) for common Windows UI toggles
-- **Backups / Restore** using `reg.exe export` / `reg.exe import` (saved to `backups/`)
-- **Change history** in memory with **Undo / Redo** stacks (not persisted)
+1. Snapshot the exact current value, including whether it exists and its type.
+2. Preview an add/modify/delete/no-change diff before writing.
+3. Re-check the snapshot immediately before apply so stale previews cannot overwrite external changes.
+4. Apply every operation and read it back for verification.
+5. If a later operation fails, compensate earlier operations in reverse order.
+6. Record a successful multi-value plan as one undoable history item.
 
----
+This is a guarded, compensating workflow—not a claim of native registry transaction atomicity. Another process can still write between checks, so recovery exports remain important.
 
-## Features (detail)
+## Features
 
-### 1) Registry Browser
-- Tree navigation (lazy-load of subkeys).
-- Value panel shows: **Name / Type / Value**.
-- Actions:
-  - **Edit** an existing value
-  - **Delete** a value
-  - **Create** a new value (supports `REG_SZ`, `REG_DWORD`, `REG_QWORD`, `REG_BINARY`)
-  - **Filter** values by substring match
-  - **Backup key** to `.reg`
+- Lazy registry tree and value browsing under HKCU
+- Search by key name, value name, or data
+- Lossless editors for `REG_SZ`, `REG_EXPAND_SZ`, `REG_MULTI_SZ`, `REG_BINARY`, `REG_DWORD`, and `REG_QWORD`
+- Previewed, conflict-aware create/edit/delete operations
+- Previewed preset batches with all-or-rollback behavior
+- Grouped undo and redo that only move history after verified success
+- Favorites and user presets with atomic UTF-8 persistence
+- Binary preset serialization without data loss
+- Unique `.reg` recovery exports and explicitly labelled import/merge behavior
+- Mutable data stored under `%LOCALAPPDATA%\RegistryManager`
 
-### 2) Presets (built-in)
-The app ships with default presets that modify common HKCU settings, including:
+## Install and run
 
-- Enable / Disable **Dark Mode**
-- Show / Hide **File Extensions**
-- Show / Hide **Hidden Files**
-- Enable / Disable **Title Bar Color**
+Requirements: Windows 10/11 and Python 3.10 or newer.
 
-Presets are stored in `presets.json` and can be extended by adding new entries with:
-- a target `path` (subkey)
-- a list of `values` as `(name, data, type)` triples
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py
+```
 
-### 3) Favorites
-Save frequently used key paths into `favorites.json`. Each entry includes:
-- hive name (string, e.g. `"HKEY_CURRENT_USER"`)
-- key path
-- optional label
+CustomTkinter is pinned in `requirements.txt` so a clean installation is reproducible.
 
-### 4) Backups + Restore
-Backups are created via Windows’ built-in tooling:
-- `reg export <key> <file> /y`
-- `reg import <file>`
+## Data locations
 
-Backups are timestamped and stored under `backups/`.
-
-### 5) History + Undo/Redo
-Registry write/delete operations can be recorded into an in-memory history:
-- Undo stack / redo stack (bounded deque)
-- Undo/redo replays changes by restoring old values or reapplying the new ones
-
----
-
-## Project structure (high level)
+Registry Manager keeps mutable data out of the source/install directory:
 
 ```text
-Registerymanager/
-  main.py
-  registry_handler.py
-  preset_manager.py
-  favorites_manager.py
-  history_manager.py
+%LOCALAPPDATA%\RegistryManager\
   presets.json
-  ui/
-    __init__.py
-    main_window.py
-    sidebar.py
-    browser.py
-    editors.py
-    styles.py
-    search_view.py
-    favorites_view.py
-    history_view.py
-  test_registry_handler.py
-  test_ui_import.py
+  favorites.json
+  backups\
+```
+
+Set `REGISTRY_MANAGER_DATA_DIR` to override this root for portable use or testing.
+
+On first run after upgrading, existing working-directory presets, favorites, and `.reg` backups are copied into the per-user directory without deleting or overwriting the originals.
+
+`reg export` creates recovery files. Importing a `.reg` file **merges** its contents into the registry; it is not an exact snapshot reconciliation and does not necessarily remove values created after export.
+
+## Test
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -v
+.\.venv\Scripts\python.exe -m compileall -q .
+git diff --check
+```
+
+Most safety behavior is tested against an in-memory fake backend with injected conflicts and write failures. Windows integration tests use a UUID-scoped key below `HKCU\Software\RegistryManagerTests` and clean it up afterward.
+
+## Project layout
+
+```text
+main.py                 Application entry point
+change_manager.py       Safe Change Plan model, verification, and compensation
+registry_codec.py       Lossless registry value formatting and parsing
+registry_handler.py     Minimal-rights winreg and reg.exe adapter
+history_manager.py      Commit-on-success grouped undo/redo stacks
+app_paths.py            Per-user data locations
+preset_manager.py       Atomic typed preset persistence
+favorites_manager.py    Atomic favorites persistence
+ui/                     CustomTkinter views and dialogs
+test_*.py               Unit and Windows integration tests
+```
+
+## Safety model
+
+- The app currently operates under `HKEY_CURRENT_USER`; it does not request elevation.
+- It opens keys with operation-specific rights such as `KEY_QUERY_VALUE` and `KEY_SET_VALUE`.
+- Apply, undo, and redo use optimistic state checks and post-write verification.
+- A compensation failure is surfaced explicitly; the app never reports full success after a partial write.
+- Session history is intentionally memory-only so registry values are not silently journaled to disk.
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.

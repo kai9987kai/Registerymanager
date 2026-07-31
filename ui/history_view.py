@@ -1,4 +1,5 @@
 import customtkinter as ctk
+from change_manager import ChangeClassification
 
 class HistoryView(ctk.CTkFrame):
     """View showing the session's change history with undo/redo buttons."""
@@ -60,19 +61,31 @@ class HistoryView(ctk.CTkFrame):
         for entry in history:
             row = ctk.CTkFrame(self.list_frame)
             row.pack(fill="x", pady=2)
-            
-            action = entry.get("action", "?")
-            action_colors = {"write": "#4CAF50", "delete": "#F44336", "create_key": "#2196F3"}
-            color = action_colors.get(action, "white")
-            
-            ctk.CTkLabel(row, text=f"[{action.upper()}]", width=80, text_color=color, anchor="w").pack(side="left", padx=5)
-            
-            path_text = entry.get("path", "")
-            name_text = entry.get("name", "")
-            detail = f"{path_text} \\ {name_text}" if name_text else path_text
+
+            if hasattr(entry, "preview"):
+                preview = entry.preview()
+                counts = preview.counts
+                action = "PLAN"
+                color = "#4EA1E8"
+                detail = (
+                    f"{entry.label}  •  {len(preview.effective_changes)} change(s)"
+                    f"  •  +{counts[ChangeClassification.ADD]}"
+                    f"  ~{counts[ChangeClassification.MODIFY]}"
+                    f"  -{counts[ChangeClassification.DELETE]}"
+                )
+                ts = getattr(entry, "created_at", "")
+            else:
+                action = entry.get("action", "?")
+                action_colors = {"write": "#4CAF50", "delete": "#F44336", "create_key": "#2196F3"}
+                color = action_colors.get(action, "white")
+                path_text = entry.get("path", "")
+                name_text = entry.get("name", "")
+                detail = f"{path_text} \\ {name_text}" if name_text else path_text
+                ts = entry.get("timestamp", "")
+
+            ctk.CTkLabel(row, text=f"[{action}]", width=80, text_color=color, anchor="w").pack(side="left", padx=5)
             ctk.CTkLabel(row, text=detail, anchor="w").pack(side="left", padx=5, fill="x", expand=True)
-            
-            ts = entry.get("timestamp", "")
+
             if ts:
                 # Show just time part
                 time_part = ts.split("T")[-1][:8] if "T" in ts else ts
